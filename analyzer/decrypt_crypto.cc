@@ -8,17 +8,21 @@ refactors as C++ development is not our main profession. E.g. the use of
 global structs is probably not preferrable.
 */
 
+// Default imports
 #include <stdlib.h>
-#include <openssl/kdf.h>
-#include <openssl/evp.h>
-#include <openssl/sha.h>
-#include <openssl/core_names.h>
-#include <hilti/rt/libhilti.h>
-
 #include <cstring>
 #include <vector>
 #include <iostream>
 #include <string>
+
+// OpenSSL imports
+#include <openssl/kdf.h>
+#include <openssl/evp.h>
+#include <openssl/sha.h>
+
+// Import HILTI
+#include <hilti/rt/libhilti.h>
+
 
 struct DecryptionInformation {
     // Constants passed from Spicy
