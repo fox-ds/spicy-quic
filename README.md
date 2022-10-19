@@ -5,6 +5,8 @@ A QUIC protocol analyzer for Zeek, based on Spicy. This analyzer tries to be com
 
 Updates via Zeek slack and/or https://github.com/zeek/zeek/issues/2326. Feel free to contribute via issues/PR's. This repository will probably be moved/merged into some other repository in the future. This code is merely a starting point for future improvements.
 
+This plugin requires OpenSSL 3.0.0 to be installed on the system.
+
 Clone locally and build with:
 ```bash
 git clone https://github.com/fox-ds/spicy-quic.git
