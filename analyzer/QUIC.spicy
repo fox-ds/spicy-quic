@@ -123,7 +123,16 @@ type VariableLengthInteger = unit {
   var result_bytes: bytes;
 
   : VariableLengthIntegerLength &try {
-    self.bytes_to_parse = $$.length + 1;
+      switch ( $$.length ) {
+        case 0:
+          self.bytes_to_parse = 1;
+        case 1:
+          self.bytes_to_parse = 2;
+        case 2:
+          self.bytes_to_parse = 4;
+        case 3:
+          self.bytes_to_parse = 8;
+     }
   }
 
   # Parse the required amount of bytes and apply a mask to clear the 
@@ -134,10 +143,10 @@ type VariableLengthInteger = unit {
           self.result = $$.to_uint(spicy::ByteOrder::Big) & 0x3f;
         case 2:
           self.result = $$.to_uint(spicy::ByteOrder::Big) & 0x3fff;
-        case 3:
-          self.result = $$.to_uint(spicy::ByteOrder::Big) & 0x3fffff;
         case 4:
           self.result = $$.to_uint(spicy::ByteOrder::Big) & 0x3fffffff;
+        case 8:
+          self.result = $$.to_uint(spicy::ByteOrder::Big) & 0x3fffffffffffffff;
      }
   }
 };
