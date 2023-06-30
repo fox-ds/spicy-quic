@@ -4,8 +4,7 @@
 WORK-IN-PROGRESS
 Initial working version of decrypting the INITIAL packets from
 both client & server to be used by the Spicy parser. Might need a few more
-refactors as C++ development is not our main profession. E.g. the use of
-global structs is probably not preferrable.
+refactors as C++ development is not our main profession.
 */
 
 // Default imports
@@ -23,21 +22,15 @@ global structs is probably not preferrable.
 // Import HILTI
 #include <hilti/rt/libhilti.h>
 
+// Struct to store decryption info for this specific connection
 struct DecryptionInformation
 {
-    // Constants passed from Spicy
-    std::vector<uint8_t> ENCRYPTED_PACKET;
-    std::vector<uint8_t> CONNECTION_ID;
-    uint8_t ENCRYPTED_OFFSET;
-    uint64_t PAYLOAD_OFFSET;
-
-    // Will be filled in later
     std::vector<uint8_t> unprotected_header;
     std::vector<uint8_t> protected_header;
-    std::vector<uint8_t> nonce;
     uint64_t packet_number;
+    std::vector<uint8_t> nonce;
     uint8_t packet_number_length;
-} gDecryptInfo;
+};
 
 /*
 Constants used in the HKDF functions. HKDF-Expand-Label uses labels
@@ -97,7 +90,7 @@ const size_t MAXIMUM_PACKET_NUMBER_LENGTH = 4;
 /*
 HKDF-Extract as decribed in https://www.rfc-editor.org/rfc/rfc8446.html#section-7.1
 */
-std::vector<uint8_t> hkdf_extract()
+std::vector<uint8_t> hkdf_extract(std::vector<uint8_t> connection_id)
 {
     std::vector<uint8_t> out_temp(INITIAL_SECRET_LEN);
     size_t initial_secret_len = out_temp.size();
@@ -107,8 +100,8 @@ std::vector<uint8_t> hkdf_extract()
     EVP_PKEY_CTX_hkdf_mode(pctx, EVP_PKEY_HKDEF_MODE_EXTRACT_ONLY);
     EVP_PKEY_CTX_set_hkdf_md(pctx, digest);
     EVP_PKEY_CTX_set1_hkdf_key(pctx,
-                               gDecryptInfo.CONNECTION_ID.data(),
-                               gDecryptInfo.CONNECTION_ID.size());
+                               connection_id.data(),
+                               connection_id.size());
     EVP_PKEY_CTX_set1_hkdf_salt(pctx,
                                 INITIAL_SALT_V1.data(),
                                 INITIAL_SALT_V1.size());
@@ -141,11 +134,11 @@ std::vector<uint8_t> hkdf_expand(size_t out_len,
 }
 
 /*
-Removes the header protection from the INITIAL packet and stores the
-result in the global struct.
+Removes the header protection from the INITIAL packet and returns a DecryptionInformation struct that is partially filled
 */
-void remove_header_protection(std::vector<uint8_t> client_hp)
+DecryptionInformation remove_header_protection(std::vector<uint8_t> client_hp, uint8_t encrypted_offset, std::vector<uint8_t> encrypted_packet)
 {
+    DecryptionInformation decryptInfo;
     int outlen;
     auto cipher = EVP_aes_128_ecb();
     auto ctx = EVP_CIPHER_CTX_new();
@@ -154,12 +147,12 @@ void remove_header_protection(std::vector<uint8_t> client_hp)
     // Passing an 1 means ENCRYPT
     EVP_CipherInit_ex(ctx, NULL, NULL, client_hp.data(), NULL, 1);
 
-    std::vector<uint8_t> sample(gDecryptInfo.ENCRYPTED_PACKET.begin() +
-                                    gDecryptInfo.ENCRYPTED_OFFSET +
+    std::vector<uint8_t> sample(encrypted_packet.begin() +
+                                    encrypted_offset +
                                     MAXIMUM_PACKET_NUMBER_LENGTH,
 
-                                gDecryptInfo.ENCRYPTED_PACKET.begin() +
-                                    gDecryptInfo.ENCRYPTED_OFFSET +
+                                encrypted_packet.begin() +
+                                    encrypted_offset +
                                     MAXIMUM_PACKET_NUMBER_LENGTH +
                                     AEAD_SAMPLE_LENGTH);
     std::vector<uint8_t> mask(sample.size());
@@ -167,7 +160,7 @@ void remove_header_protection(std::vector<uint8_t> client_hp)
 
     // To determine the actual packet number length,
     // we have to remove the mask from the first byte
-    uint8_t first_byte = gDecryptInfo.ENCRYPTED_PACKET[0];
+    uint8_t first_byte = encrypted_packet[0];
 
     if (first_byte & 0x80)
     {
@@ -183,10 +176,10 @@ void remove_header_protection(std::vector<uint8_t> client_hp)
 
     // .. and use this to reconstruct the (partially) unprotected header
     std::vector<uint8_t> unprotected_header(
-        gDecryptInfo.ENCRYPTED_PACKET.begin(),
+        encrypted_packet.begin(),
 
-        gDecryptInfo.ENCRYPTED_PACKET.begin() +
-            gDecryptInfo.ENCRYPTED_OFFSET +
+        encrypted_packet.begin() +
+            encrypted_offset +
             recovered_packet_number_length);
 
     uint32_t decoded_packet_number = 0;
@@ -194,69 +187,73 @@ void remove_header_protection(std::vector<uint8_t> client_hp)
     unprotected_header[0] = first_byte;
     for (int i = 0; i < recovered_packet_number_length; ++i)
     {
-        unprotected_header[gDecryptInfo.ENCRYPTED_OFFSET + i] ^= mask[1 + i];
+        unprotected_header[encrypted_offset + i] ^= mask[1 + i];
         decoded_packet_number =
-            unprotected_header[gDecryptInfo.ENCRYPTED_OFFSET + i] |
+            unprotected_header[encrypted_offset + i] |
             (decoded_packet_number << 8);
     }
-    std::vector<uint8_t> protected_header(gDecryptInfo.ENCRYPTED_PACKET.begin(),
-                                          gDecryptInfo.ENCRYPTED_PACKET.begin() +
-                                              gDecryptInfo.ENCRYPTED_OFFSET +
+    std::vector<uint8_t> protected_header(encrypted_packet.begin(),
+                                          encrypted_packet.begin() +
+                                              encrypted_offset +
                                               recovered_packet_number_length);
 
-    // Store the information back in the global struct
-    gDecryptInfo.packet_number = decoded_packet_number;
-    gDecryptInfo.packet_number_length = recovered_packet_number_length;
-    gDecryptInfo.protected_header = protected_header;
-    gDecryptInfo.unprotected_header = unprotected_header;
+    // Store the information back in the struct
+    decryptInfo.packet_number = decoded_packet_number;
+    decryptInfo.packet_number_length = recovered_packet_number_length;
+    decryptInfo.protected_header = protected_header;
+    decryptInfo.unprotected_header = unprotected_header;
+    return decryptInfo;
 }
 
 /*
 Calculate the nonce for the AEAD by XOR'ing the CLIENT_IV and the
-decoded packet number, and store the result back in the global struct
+decoded packet number, and returns the nonce
 */
-void calculate_nonce(std::vector<uint8_t> client_iv)
+std::vector<uint8_t> calculate_nonce(std::vector<uint8_t> client_iv, uint64_t packet_number)
 {
     std::vector<uint8_t> nonce = client_iv;
 
     for (int i = 0; i < 8; ++i)
     {
         nonce[AEAD_IV_LEN - 1 - i] ^=
-            (uint8_t)(gDecryptInfo.packet_number >> 8 * i);
+            (uint8_t)(packet_number >> 8 * i);
     }
 
-    // Store the result in the global struct
-    gDecryptInfo.nonce = nonce;
+    // Return the nonce
+    return nonce;
 }
 
 /*
 Function that calls the AEAD decryption routine, and returns the
 decrypted data
 */
-std::vector<uint8_t> decrypt(std::vector<uint8_t> client_key)
+std::vector<uint8_t> decrypt(std::vector<uint8_t> client_key,
+                             std::vector<uint8_t> encrypted_packet,
+                             uint64_t payload_offset,
+                             DecryptionInformation decryptInfo)
 {
     int out, out2, res;
     std::vector<uint8_t> encrypted_payload(
-        gDecryptInfo.ENCRYPTED_PACKET.begin() +
-            gDecryptInfo.protected_header.size(),
+        encrypted_packet.begin() +
+            decryptInfo.protected_header.size(),
 
-        gDecryptInfo.ENCRYPTED_PACKET.begin() +
-            gDecryptInfo.protected_header.size() +
-            gDecryptInfo.PAYLOAD_OFFSET -
-            gDecryptInfo.packet_number_length -
+        encrypted_packet.begin() +
+            decryptInfo.protected_header.size() +
+            payload_offset -
+            decryptInfo.packet_number_length -
             AEAD_TAG_LENGTH);
 
     std::vector<uint8_t> tag_to_check(
-        gDecryptInfo.ENCRYPTED_PACKET.begin() +
-            gDecryptInfo.protected_header.size() +
-            gDecryptInfo.PAYLOAD_OFFSET -
-            gDecryptInfo.packet_number_length -
+        encrypted_packet.begin() +
+            decryptInfo.protected_header.size() +
+            payload_offset -
+            decryptInfo.packet_number_length -
             AEAD_TAG_LENGTH,
 
-        gDecryptInfo.ENCRYPTED_PACKET.begin() +
-            gDecryptInfo.protected_header.size() +
-            gDecryptInfo.PAYLOAD_OFFSET -
-            gDecryptInfo.packet_number_length);
+        encrypted_packet.begin() +
+            decryptInfo.protected_header.size() +
+            payload_offset -
+            decryptInfo.packet_number_length);
 
     unsigned char decrypt_buffer[MAXIMUM_PACKET_LENGTH];
 
@@ -274,7 +271,7 @@ std::vector<uint8_t> decrypt(std::vector<uint8_t> client_key)
     // Set the sizes for the IV and KEY
     EVP_CIPHER_CTX_ctrl(ctx,
                         EVP_CTRL_CCM_SET_IVLEN,
-                        gDecryptInfo.nonce.size(),
+                        decryptInfo.nonce.size(),
                         NULL);
 
     EVP_CIPHER_CTX_set_key_length(ctx,
@@ -285,7 +282,7 @@ std::vector<uint8_t> decrypt(std::vector<uint8_t> client_key)
                       NULL,
                       NULL,
                       client_key.data(),
-                      gDecryptInfo.nonce.data(),
+                      decryptInfo.nonce.data(),
                       0);
 
     // Set the tag to be validated after decryption
@@ -298,8 +295,8 @@ std::vector<uint8_t> decrypt(std::vector<uint8_t> client_key)
     EVP_CipherUpdate(ctx,
                      NULL,
                      &out,
-                     gDecryptInfo.unprotected_header.data(),
-                     gDecryptInfo.unprotected_header.size());
+                     decryptInfo.unprotected_header.data(),
+                     decryptInfo.unprotected_header.size());
 
     // Set the actual data to decrypt data into the decrypt_buffer. The amount of
     // byte decrypted is stored into `out`
@@ -315,45 +312,6 @@ std::vector<uint8_t> decrypt(std::vector<uint8_t> client_key)
     // Copy the decrypted data from the decrypted buffer into a new vector and return this
     // Use the `out` variable to only include relevant bytes
     std::vector<uint8_t> decrypted_data(decrypt_buffer, decrypt_buffer + out);
-    return decrypted_data;
-}
-
-/*
-Function that first generates the correct key material for the decryption,
-removes the header protection, calculates the nonce and finally
-calls the decryption procedure.
-*/
-std::vector<uint8_t> process_data(bool from_client)
-{
-    std::vector<uint8_t> initial_secret = hkdf_extract();
-
-    std::vector<uint8_t> server_client_secret;
-    if ( from_client ) {
-        server_client_secret = hkdf_expand(INITIAL_SECRET_LEN,
-                                            initial_secret,
-                                            CLIENT_INITIAL_INFO);
-    } else {
-        server_client_secret = hkdf_expand(INITIAL_SECRET_LEN,
-                                            initial_secret,
-                                            SERVER_INITIAL_INFO);
-    }
-
-    std::vector<uint8_t> key = hkdf_expand(AEAD_KEY_LEN,
-                                                  server_client_secret,
-                                                  KEY_INFO);
-    std::vector<uint8_t> iv = hkdf_expand(AEAD_IV_LEN,
-                                                 server_client_secret,
-                                                 IV_INFO);
-    std::vector<uint8_t> hp = hkdf_expand(AEAD_HP_LEN,
-                                                 server_client_secret,
-                                                 HP_INFO);
-
-    remove_header_protection(hp);
-    calculate_nonce(iv);
-
-    std::vector<uint8_t> decrypted_data = decrypt(key);
-    std::string decr_data_str(decrypted_data.begin(), decrypted_data.end());
-
     return decrypted_data;
 }
 
@@ -383,20 +341,40 @@ hilti::rt::Bytes decrypt_crypto_payload(
         cnnid.push_back(singlebyte);
     }
 
-    gDecryptInfo.ENCRYPTED_PACKET = e_pkt;
-    gDecryptInfo.CONNECTION_ID = cnnid;
-    gDecryptInfo.PAYLOAD_OFFSET = payload_offset;
-    gDecryptInfo.ENCRYPTED_OFFSET = (uint8_t)encrypted_offset;
+    std::vector<uint8_t> initial_secret = hkdf_extract(cnnid);
 
-    std::vector<uint8_t> decrypted_data = process_data(from_client);
-
-    hilti::rt::Bytes decr;
-    for (const auto& singlebyte : decrypted_data) {
-        decr.append(singlebyte);
+    std::vector<uint8_t> server_client_secret;
+    if (from_client)
+    {
+        server_client_secret = hkdf_expand(INITIAL_SECRET_LEN,
+                                           initial_secret,
+                                           CLIENT_INITIAL_INFO);
+    }
+    else
+    {
+        server_client_secret = hkdf_expand(INITIAL_SECRET_LEN,
+                                           initial_secret,
+                                           SERVER_INITIAL_INFO);
     }
 
-    // Null out the global struct to be sure
-    gDecryptInfo = {};
+    std::vector<uint8_t> key = hkdf_expand(AEAD_KEY_LEN,
+                                           server_client_secret,
+                                           KEY_INFO);
+    std::vector<uint8_t> iv = hkdf_expand(AEAD_IV_LEN,
+                                          server_client_secret,
+                                          IV_INFO);
+    std::vector<uint8_t> hp = hkdf_expand(AEAD_HP_LEN,
+                                          server_client_secret,
+                                          HP_INFO);
 
+    DecryptionInformation decryptInfo = remove_header_protection(hp, (uint8_t)encrypted_offset, e_pkt);
+
+    // Calculate the correct nonce for the decryption
+    decryptInfo.nonce = calculate_nonce(iv, decryptInfo.packet_number);
+
+    std::vector<uint8_t> decrypted_data = decrypt(key, e_pkt, payload_offset, decryptInfo);
+
+    // Return it as hilti Bytes again
+    hilti::rt::Bytes decr(decrypted_data.begin(), decrypted_data.end());
     return decr;
 }
