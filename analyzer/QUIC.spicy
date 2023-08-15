@@ -88,18 +88,6 @@ public type InitialByte = unit {
   }
 };
 
-# Used to peek into the next byte and check it's value
-type InitialUint8 = unit {
-  var bt: uint8;
-  : uint8 {
-    self.bt = $$;
-  }
-
-  on %done{
-    self.backtrack();
-  }
-};
-
 type VariableLengthInteger = unit {
   var bytes_to_parse: uint64;
   var result: uint64;
