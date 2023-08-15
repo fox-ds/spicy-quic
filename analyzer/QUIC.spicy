@@ -16,13 +16,11 @@ type ConnectionIDInfo = unit {
   var server_cid_len: uint8;
   var initial_destination_conn_id: bytes;
   var initial_packets_exchanged: bool;
-  var initialized: bool;
 
   on %init {
     self.client_cid_len = 0;
     self.server_cid_len = 0;
     self.initial_packets_exchanged = False;
-    self.initialized = False;
   }
 };
 
@@ -378,14 +376,6 @@ type Frame = unit(from_client: bool, context: ConnectionIDInfo&) {
       # The 2 length bytes are also passed, followed by the actual CRYPTO blob which contains a CLIENT HELLO or SERVER HELLO
       local length_bytes = pack(cast<uint16>(|handshake_data|), spicy::ByteOrder::Big);
       zeek::protocol_data_in(from_client, b"\x16\x03\x03" + length_bytes + handshake_data, ssl_handle);
-    }
-  }
-
-  on %init {
-    # Make sure to only attach the SSL analyzer once per QUIC connection
-    if ( ! context.initialized ) {
-      context.initialized = True;
-      zeek::protocol_begin("SSL");
     }
   }
 };
