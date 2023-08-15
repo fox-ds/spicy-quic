@@ -206,14 +206,17 @@ public type LongHeader = unit {
 };
 
 # Decrypted long packet payload that can actually be parsed
-public type DecryptedLongPacketPayload = unit(packet_type: LongPacketType, from_client: bool) {
+public type DecryptedLongPacketPayload = unit(packet_type: LongPacketType, from_client: bool, crypto_sink: sink) {
   frame_type : uint8 &convert=cast<FrameType>($$);
 
   # TODO: add other FrameTypes as well
   switch ( self.frame_type ) {
     FrameType::ACK1 -> a: ACKPayload;
     FrameType::ACK2 -> b: ACKPayload;
-    FrameType::CRYPTO -> c: CRYPTOPayload(from_client);
+    FrameType::CRYPTO -> c: CRYPTOPayload(from_client) {
+      # Have the sink re-assemble potentially out-of-order cryptodata
+      crypto_sink.write(self.c.cryptodata, self.c.offset.result);
+    }
     FrameType::PADDING -> : /\x00*/;  # eat the padding
     FrameType::PING -> : void;
   };
@@ -225,31 +228,15 @@ public type EncryptedLongPacketPayload = unit {
 };
 
 # Determines how to parse the long packet payload, depending on whether is was decrypted or not
-public type LongPacketPayload = unit(packet_type: LongPacketType, from_client: bool, encrypted: bool) {
-  : DecryptedLongPacketPayload(packet_type, from_client) if (encrypted == False);
+public type LongPacketPayload = unit(packet_type: LongPacketType, from_client: bool, crypto_sink: sink, encrypted: bool) {
+  : DecryptedLongPacketPayload(packet_type, from_client, crypto_sink) if (encrypted == False);
   : EncryptedLongPacketPayload if (encrypted == True);
 };
 
 type CRYPTOPayload = unit(from_client: bool) {
-  var length_in_byte1: bytes;
-  var length_in_byte2: bytes;
-
   offset: VariableLengthInteger;
   length: VariableLengthInteger;
   cryptodata: bytes &size=self.length.result;
-
-  on %done {
-    # As of 5 Sept. 2022 there is no function to convert a unsigned integer back to bytes.
-    # Therefore, the following (quite dirty) method is used. Should be fixed/improved whenever 
-    # a better alternative is available.
-    # It converts a uint16 to its two-byte representation.
-    self.length_in_byte1 = ("%c" % cast<uint8>((self.length.result >> 8) & 0xff)).encode();
-    self.length_in_byte2 = ("%c" % cast<uint8>(self.length.result & 0xff)).encode();
-
-    # The data is passed to the SSL analyzer as part of a HANDSHAKE (0x16) message with TLS1.3 (\x03\x03).
-    # The 2 length bytes are also passed, followed by the actual CRYPTO blob which contains a CLIENT HELLO or SERVER HELLO
-    zeek::protocol_data_in(from_client, b"\x16\x03\x03" + self.length_in_byte1 + self.length_in_byte2 + self.cryptodata);
-  }
 };
 
 type ACKPayload = unit {
@@ -305,6 +292,21 @@ public type ShortPacketPayload = unit {
   payload: bytes &eod;
 };
 
+# Buffer all crypto messages (which might be fragmented and unordered)
+# into the following unit.
+type CryptoBuffer = unit() {
+
+  var buffered: vector<bytes>;
+  var len: uint64;
+
+  : bytes &chunked &eod {
+    self.buffered.push_back($$);
+    self.len += |$$|;
+
+    # print "crypto_buffer got data", |$$|, self.len;
+  }
+};
+
 ##############
 # QUIC frame parsing
 ##############
@@ -312,6 +314,9 @@ type Frame = unit(from_client: bool, context: ConnectionIDInfo&) {
   var hdr_form: HeaderForm;
   var decrypted_data: bytes;
   var full_packet: bytes;
+
+  sink crypto_sink;
+  var crypto_buffer: CryptoBuffer&;
 
   # Peek into the header to check if it's a SHORT or LONG header
   : InitialByte &try {
@@ -330,6 +335,10 @@ type Frame = unit(from_client: bool, context: ConnectionIDInfo&) {
 
         if ( self.long_header.first_byte.packet_type == LongPacketType::INITIAL 
             && context.initial_packets_exchanged == False ) {
+
+          # Initialize sink/buffer for accumulating CRYPTO frames.
+          self.crypto_buffer = new CryptoBuffer();
+          self.crypto_sink.connect(self.crypto_buffer);
 
           if ( from_client ) {
             context.server_cid_len = self.long_header.dest_conn_id_len;
@@ -374,8 +383,29 @@ type Frame = unit(from_client: bool, context: ConnectionIDInfo&) {
   # Depending on the type of header, we parse the remaining payload.
   switch ( self.hdr_form ) {
     HeaderForm::SHORT -> remaining_short_payload: ShortPacketPayload;
-    HeaderForm::LONG -> remaining_long_payload : LongPacketPayload(self.long_header.first_byte.packet_type, from_client, context.initial_packets_exchanged)[] &parse-from=self.decrypted_data;
+    HeaderForm::LONG -> remaining_long_payload : LongPacketPayload(self.long_header.first_byte.packet_type, from_client, self.crypto_sink, context.initial_packets_exchanged)[] &parse-from=self.decrypted_data;
   };
+
+  # Once the Packet is fully parsed, pass the accumulated CRYPTO frames
+  # to the SSL analyzer as handshake data.
+  on %done {
+    if ( ! context.initial_packets_exchanged && self.crypto_buffer != Null && self.crypto_buffer.len > 0 ) {
+      local ssl_handle = zeek::protocol_handle_get_or_create("SSL");
+
+      # Grumble, we can't use b"".join() because that renders individual
+      # parts as "printable bytes", do the work here.
+      local handshake_data = b"";
+      for ( b in self.crypto_buffer.buffered )
+        handshake_data += b;
+
+      assert |handshake_data| == self.crypto_buffer.len;
+
+      # The data is passed to the SSL analyzer as part of a HANDSHAKE (0x16) message with TLS1.3 (\x03\x03).
+      # The 2 length bytes are also passed, followed by the actual CRYPTO blob which contains a CLIENT HELLO or SERVER HELLO
+      local length_bytes = pack(cast<uint16>(|handshake_data|), spicy::ByteOrder::Big);
+      zeek::protocol_data_in(from_client, b"\x16\x03\x03" + length_bytes + handshake_data, ssl_handle);
+    }
+  }
 
   on %init {
     # Make sure to only attach the SSL analyzer once per QUIC connection
