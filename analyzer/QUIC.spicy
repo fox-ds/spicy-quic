@@ -233,7 +233,7 @@ type CRYPTOPayload = unit(from_client: bool) {
   var length_in_byte1: bytes;
   var length_in_byte2: bytes;
 
-  offset: uint8;
+  offset: VariableLengthInteger;
   length: VariableLengthInteger;
   cryptodata: bytes &size=self.length.result;
 
