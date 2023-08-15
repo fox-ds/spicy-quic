@@ -214,7 +214,8 @@ public type DecryptedLongPacketPayload = unit(packet_type: LongPacketType, from_
     FrameType::ACK1 -> a: ACKPayload;
     FrameType::ACK2 -> b: ACKPayload;
     FrameType::CRYPTO -> c: CRYPTOPayload(from_client);
-    FrameType::PADDING -> d: PADDINGPayload;
+    FrameType::PADDING -> : /\x00*/;  # eat the padding
+    FrameType::PING -> : void;
   };
 };
 
@@ -256,18 +257,6 @@ type ACKPayload = unit {
   ack_delay: uint8;
   ack_range_count: uint8;
   first_ack_range: uint8;
-};
-
-public type NullBytes = unit {
-	: (b"\x00")[];
-	x: InitialUint8 &try;
-};
-
-type PADDINGPayload = unit {
-  var padding_length: uint64 = 0;
-
-  # Simply consume all next nullbytes
-	: NullBytes;
 };
 
 
