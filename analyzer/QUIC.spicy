@@ -102,52 +102,26 @@ type InitialUint8 = unit {
   }
 };
 
-# https://datatracker.ietf.org/doc/rfc9000/ 
-# Section 16 and Appendix A
-type VariableLengthIntegerLength = unit {
-  var length: uint8;
-
-  a: bitfield(8) {
-    length: 6..7 &convert=cast<uint8>($$) &byte-order=spicy::ByteOrder::Big;
-  };
-
-  on %done {
-    self.length = self.a.length;
-    self.backtrack();
-  }
-};
-
 type VariableLengthInteger = unit {
   var bytes_to_parse: uint64;
   var result: uint64;
-  var result_bytes: bytes;
 
-  : VariableLengthIntegerLength &try {
-      switch ( $$.length ) {
-        case 0:
-          self.bytes_to_parse = 1;
-        case 1:
-          self.bytes_to_parse = 2;
-        case 2:
-          self.bytes_to_parse = 4;
-        case 3:
-          self.bytes_to_parse = 8;
-     }
+  # Value of the two most significant bits indicates number of bytes
+  # to parse for the variable length integer.
+  #
+  # https://datatracker.ietf.org/doc/rfc9000/
+  # Section 16 and Appendix A
+  #
+  first_byte: bytes &size=1 {
+    local uint8_val = uint8($$.to_uint(spicy::ByteOrder::Big));
+    self.bytes_to_parse = 2**((0xC0 & uint8_val) >> 6);
+    # Re-pack without most significant two bits for later use.
+    self.first_byte = pack(0x3f & uint8_val, spicy::ByteOrder::Big);
   }
+  remaining_bytes: bytes &size=self.bytes_to_parse  - 1;
 
-  # Parse the required amount of bytes and apply a mask to clear the 
-  # first two bits, leaving the actual length
-  remainder: bytes &size=self.bytes_to_parse {
-      switch ( self.bytes_to_parse ) {
-        case 1:
-          self.result = $$.to_uint(spicy::ByteOrder::Big) & 0x3f;
-        case 2:
-          self.result = $$.to_uint(spicy::ByteOrder::Big) & 0x3fff;
-        case 4:
-          self.result = $$.to_uint(spicy::ByteOrder::Big) & 0x3fffffff;
-        case 8:
-          self.result = $$.to_uint(spicy::ByteOrder::Big) & 0x3fffffffffffffff;
-     }
+  on %done {
+    self.result = (self.first_byte + self.remaining_bytes).to_uint(spicy::ByteOrder::Big);
   }
 };
 
