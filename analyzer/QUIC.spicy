@@ -11,16 +11,48 @@ public function decrypt_crypto_payload(entire_packet: bytes, connection_id: byte
 ## Context - tracked in one connection
 ##############
 
+function should_buffer(is_client: bool, info: ConnectionIDInfo): bool {
+  if ( is_client )
+    return ! info.client_initial_processed;
+
+  return ! info.server_initial_processed;
+}
+
 type ConnectionIDInfo = unit {
   var client_cid_len: uint8;
   var server_cid_len: uint8;
+
+  # The DCID used by the client is employed by client and
+  # server for packet protection. Packet re-ordering
+  # will make life miserable.
+  #
+  # https://quicwg.org/base-drafts/rfc9001.html#appendix-A
   var initial_destination_conn_id: bytes;
-  var initial_packets_exchanged: bool;
+
+  # Currently, this analyzer assumes that ClientHello
+  # and ServerHello fit into the first INITAL packet (and
+  # that there is only one that we're interested in.
+  #
+  # But minimally the following section sounds like this might not
+  # hold in general and the Wireshark has samples showing
+  # the handshake spanning across more than two INITIAL packets.
+  # (quic-fragmented-handshakes.pcapng.gz)
+  #
+  # https://datatracker.ietf.org/doc/html/rfc9001#section-4.3
+  #
+  # Possible fix is to buffer up all CRYPTO frames across multiple
+  # INITIAL packets until we see a non-INITIAL frame.
+  #
+  # We also rely heavily on getting originator and responder right.
+  #
+  var client_initial_processed: bool;
+  var server_initial_processed: bool;
 
   on %init {
     self.client_cid_len = 0;
     self.server_cid_len = 0;
-    self.initial_packets_exchanged = False;
+    self.client_initial_processed = False;
+    self.server_initial_processed = False;
   }
 };
 
@@ -281,7 +313,9 @@ type Frame = unit(from_client: bool, context: ConnectionIDInfo&) {
   }
 
   # Capture all the packet bytes if we're still have a chance of decrypting the INITIAL PACKETS
-  fpack: AllData &try if (context.initial_packets_exchanged == False);
+  fpack: AllData &try if ( should_buffer(from_client, context) );
+
+  var is_encrypted: bool = True;
 
   # Depending on the header, parse it and update the src/dest ConnectionID's
   switch ( self.hdr_form ) {
@@ -291,9 +325,11 @@ type Frame = unit(from_client: bool, context: ConnectionIDInfo&) {
         # TODO: allow this for Retry packets
 
         if ( self.long_header.first_byte.packet_type == LongPacketType::INITIAL 
-            && context.initial_packets_exchanged == False ) {
+            && should_buffer(from_client, context) ) {
 
           # Initialize sink/buffer for accumulating CRYPTO frames.
+          #
+          # TODO: Attach this to the context instead of unit.
           self.crypto_buffer = new CryptoBuffer();
           self.crypto_sink.connect(self.crypto_buffer);
 
@@ -309,9 +345,10 @@ type Frame = unit(from_client: bool, context: ConnectionIDInfo&) {
                                    self.long_header.encrypted_offset,
                                    self.long_header.payload_length,
                                    from_client);
-            
+            self.is_encrypted = False;
+
             # Set this to be the seed for the decryption
-            if ( ! context.initial_packets_exchanged ) {
+            if ( |context.initial_destination_conn_id| == 0 ) {
               context.initial_destination_conn_id = self.long_header.dest_conn_id;
             }
 
@@ -326,13 +363,15 @@ type Frame = unit(from_client: bool, context: ConnectionIDInfo&) {
                                    self.long_header.encrypted_offset,
                                    self.long_header.payload_length,
                                    from_client);
+            self.is_encrypted = False;
           }
         }
 
         # If it's a reply from the server and it's not a REPLY, we assume the keys are restablished and decryption is no longer possible
         # TODO: verify if this is actually correct per RFC
         if (self.long_header.first_byte.packet_type != LongPacketType::RETRY && ! from_client) {
-          context.initial_packets_exchanged = True;
+          context.server_initial_processed = True;
+          context.client_initial_processed = True;
         }
     }
   };
@@ -340,13 +379,17 @@ type Frame = unit(from_client: bool, context: ConnectionIDInfo&) {
   # Depending on the type of header, we parse the remaining payload.
   switch ( self.hdr_form ) {
     HeaderForm::SHORT -> remaining_short_payload: ShortPacketPayload;
-    HeaderForm::LONG -> remaining_long_payload : LongPacketPayload(self.long_header.first_byte.packet_type, from_client, self.crypto_sink, context.initial_packets_exchanged)[] &parse-from=self.decrypted_data;
+
+    # XXX: There's something wrong here, self.decrypted_data will be empty
+    #      if we didn't decrypt anything and so the is_encrypted flag seems
+    #      useless, actually.
+    HeaderForm::LONG -> remaining_long_payload : LongPacketPayload(self.long_header.first_byte.packet_type, from_client, self.crypto_sink, self.is_encrypted)[] &parse-from=self.decrypted_data;
   };
 
   # Once the Packet is fully parsed, pass the accumulated CRYPTO frames
   # to the SSL analyzer as handshake data.
   on %done {
-    if ( ! context.initial_packets_exchanged && self.crypto_buffer != Null && self.crypto_buffer.len > 0 ) {
+    if ( self.crypto_buffer != Null && self.crypto_buffer.len > 0 ) {
       local ssl_handle = zeek::protocol_handle_get_or_create("SSL");
 
       # Grumble, we can't use b"".join() because that renders individual
@@ -361,6 +404,13 @@ type Frame = unit(from_client: bool, context: ConnectionIDInfo&) {
       # The 2 length bytes are also passed, followed by the actual CRYPTO blob which contains a CLIENT HELLO or SERVER HELLO
       local length_bytes = pack(cast<uint16>(|handshake_data|), spicy::ByteOrder::Big);
       zeek::protocol_data_in(from_client, b"\x16\x03\x03" + length_bytes + handshake_data, ssl_handle);
+
+      # Stop decryption attempts after processing the very first
+      # INITIAL packet.
+      if ( from_client )
+        context.client_initial_processed = True;
+      else
+        context.server_initial_processed = True;
     }
   }
 };
