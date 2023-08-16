@@ -1,4 +1,4 @@
-protocol analyzer spicy::QUIC over UDP:
+protocol analyzer QUIC over UDP:
     parse originator with QUIC::RequestFrame,
     parse responder with QUIC::ResponseFrame,
     ports { 443/udp };
