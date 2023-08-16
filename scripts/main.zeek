@@ -57,6 +57,13 @@ redef record connection += {
 	quic: Info &optional;
 };
 
+# Faster to modify here than re-compiling .evt files.
+const quic_ports = {
+	443/udp, # HTTP3-over-QUIC
+	853/udp, # DNS-over-QUIC
+	784/udp, # DNS-over-QUIC early
+};
+
 function set_conn(c: connection, is_orig: bool, version: count, dcid: string, scid: string)
 	{
 	if ( ! c?$quic )
@@ -130,4 +137,5 @@ hook finalize_quic(c: connection)
 event zeek_init()
 	{
 	Log::create_stream(LOG, [$columns=Info, $ev=log_quic, $path="quic", $policy=log_policy]);
+	Analyzer::register_for_ports(Analyzer::ANALYZER_QUIC, quic_ports);
 	}
