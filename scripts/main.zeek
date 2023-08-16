@@ -24,9 +24,11 @@ export {
 		version:     string  &log;
 
 		## First Destination Connection ID used by client. This is
-		## random and unpredictable, so may not provide much info.
+		## random and unpredictable, but used for packet protection
+		## by client and server.
 		## https://datatracker.ietf.org/doc/html/rfc9000#name-negotiating-connection-ids
 		client_initial_dcid: string  &log &optional;
+
 		## Server chosen Connection ID in server's INITIAL packet.
 		## This is to be used by the client in subsequent packets.
 		server_scid:        string  &log &optional;
@@ -82,16 +84,6 @@ event QUIC::long_header(c: connection, is_orig: bool, packet_type: QUIC::LongPac
 		return;
 
 	set_conn(c, is_orig, version, dcid, scid);
-
-	# TODO: Move this to ssl_server_hello() once working.
-	if ( c$quic?$server_scid && ! c$quic$logged )
-		{
-		Log::write(LOG, c$quic);
-		c$quic$logged = T;
-		}
-
-	# TODO: Also disable QUIC analyzer after handshake. There's
-        #       not a lot we can do afterwards anyhow.
 	}
 
 event ssl_extension_server_name(c: connection, is_client: bool, names: string_vec) &priority=5
@@ -111,6 +103,19 @@ event ssl_extension_application_layer_protocol_negotiation(c: connection, is_cli
 			# vector or concatenation.
 			Reporter::conn_weird("QUIC_many_protocols", c, cat(protocols));
 		}
+	}
+
+event ssl_server_hello(c: connection, version: count, record_version: count, possible_ts: time, server_random: string, session_id: string, cipher: count, comp_method: count) &priority=-5
+	{
+	if ( ! c?$quic || c$quic$logged )
+		return;
+
+	Log::write(LOG, c$quic);
+	c$quic$logged = T;
+
+	# TODO: Should we disable the analyzer at this point assuming
+	#       the rest will just be protected/encrypted packets into
+	#       which we can't actually see into anyhow?
 	}
 
 hook finalize_quic(c: connection)
