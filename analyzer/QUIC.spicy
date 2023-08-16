@@ -150,15 +150,15 @@ public type LongHeader = unit {
   src_conn_id_len: uint8 { self.client_conn_id_length = $$; }
   src_conn_id: bytes &size=self.client_conn_id_length;
 
-  # We pass the type specific 4 bits too and don't parse them again
   switch ( self.first_byte.packet_type ) {
-    LongPacketType::INITIAL -> initial_hdr : InitialLongPacketHeader(self.first_byte.type_specific_bits) {
-        self.encrypted_offset = self.offset() + 
-                                self.initial_hdr.payload_length.bytes_to_parse + 
-                                self.initial_hdr.token_length.bytes_to_parse + 
+    LongPacketType::INITIAL -> initial_hdr : InitialLongPacket {
+        self.encrypted_offset = self.offset() +
+                                self.initial_hdr.length.bytes_to_parse +
+                                self.initial_hdr.token_length.bytes_to_parse +
                                 self.initial_hdr.token_length.result;
-        self.payload_length   = self.initial_hdr.payload_length.result;
+        self.payload_length   = self.initial_hdr.length.result;
     }
+
     LongPacketType::ZERO_RTT -> zerortt_hdr : ZeroRTTLongPacketHeader(self.first_byte.type_specific_bits);
     LongPacketType::HANDSHAKE -> handshake_hdr : HandshakeLongPacketHeader(self.first_byte.type_specific_bits);
     LongPacketType::RETRY -> retry_hdr : RetryLongPacketHeader(self.first_byte.type_specific_bits);
@@ -212,19 +212,16 @@ type ACKPayload = unit {
 # Specific long packet type units
 ##############
 
-type InitialLongPacketHeader = unit(type_specific_bits: uint8) {
-  var packet_number_length_full: uint8;
-
+# Remainder of an Initial packet
+type InitialLongPacket = unit() {
   token_length: VariableLengthInteger;
   token: bytes &size=self.token_length.result;
-  payload_length: VariableLengthInteger;
-  packet_number: bytes &size=self.packet_number_length_full &convert=$$.to_uint(spicy::ByteOrder::Big);
-
-  on %init {
-    # Calculate the packet number length while the initial byte is still encoded.
-    # Will result in 0, 1, 2 or 3. So we need to read n+1 bytes to properly parse the header.
-    self.packet_number_length_full = (type_specific_bits & 0x03) + 1;
-  }
+  length: VariableLengthInteger;
+  # Consume the remainder of payload. This is
+  # includes the packet number field, but we
+  # do not know its length yet. We need the
+  # payload for sampling, however.
+  payload: bytes &size=self.length.result;
 };
 
 # TODO: implement
