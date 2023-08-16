@@ -285,14 +285,11 @@ public type ShortPacketPayload = unit {
 # into the following unit.
 type CryptoBuffer = unit() {
 
-  var buffered: vector<bytes>;
-  var len: uint64;
+  var buffered: bytes;
 
   : bytes &chunked &eod {
-    self.buffered.push_back($$);
-    self.len += |$$|;
-
-    # print "crypto_buffer got data", |$$|, self.len;
+    self.buffered += $$;
+    # print "crypto_buffer got data", |$$|, |self.buffered|;
   }
 };
 
@@ -389,16 +386,10 @@ type Frame = unit(from_client: bool, context: ConnectionIDInfo&) {
   # Once the Packet is fully parsed, pass the accumulated CRYPTO frames
   # to the SSL analyzer as handshake data.
   on %done {
-    if ( self.crypto_buffer != Null && self.crypto_buffer.len > 0 ) {
+    if ( self.crypto_buffer != Null && |self.crypto_buffer.buffered| > 0 ) {
       local ssl_handle = zeek::protocol_handle_get_or_create("SSL");
 
-      # Grumble, we can't use b"".join() because that renders individual
-      # parts as "printable bytes", do the work here.
-      local handshake_data = b"";
-      for ( b in self.crypto_buffer.buffered )
-        handshake_data += b;
-
-      assert |handshake_data| == self.crypto_buffer.len;
+      local handshake_data = self.crypto_buffer.buffered;
 
       # The data is passed to the SSL analyzer as part of a HANDSHAKE (0x16) message with TLS1.3 (\x03\x03).
       # The 2 length bytes are also passed, followed by the actual CRYPTO blob which contains a CLIENT HELLO or SERVER HELLO
