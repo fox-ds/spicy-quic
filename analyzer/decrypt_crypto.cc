@@ -229,7 +229,7 @@ decrypted data
 */
 std::vector<uint8_t> decrypt(std::vector<uint8_t> client_key,
                              std::vector<uint8_t> encrypted_packet,
-                             uint64_t payload_offset,
+                             uint64_t payload_length,
                              DecryptionInformation decryptInfo)
 {
     int out, out2, res;
@@ -239,20 +239,20 @@ std::vector<uint8_t> decrypt(std::vector<uint8_t> client_key,
 
         encrypted_packet.begin() +
             decryptInfo.protected_header.size() +
-            payload_offset -
+            payload_length -
             decryptInfo.packet_number_length -
             AEAD_TAG_LENGTH);
 
     std::vector<uint8_t> tag_to_check(
         encrypted_packet.begin() +
             decryptInfo.protected_header.size() +
-            payload_offset -
+            payload_length -
             decryptInfo.packet_number_length -
             AEAD_TAG_LENGTH,
 
         encrypted_packet.begin() +
             decryptInfo.protected_header.size() +
-            payload_offset -
+            payload_length -
             decryptInfo.packet_number_length);
 
     unsigned char decrypt_buffer[MAXIMUM_PACKET_LENGTH];
@@ -324,7 +324,7 @@ hilti::rt::Bytes decrypt_crypto_payload(
     const hilti::rt::Bytes &entire_packet,
     const hilti::rt::Bytes &connection_id,
     const hilti::rt::integer::safe<uint64_t> &encrypted_offset,
-    const hilti::rt::integer::safe<uint64_t> &payload_offset,
+    const hilti::rt::integer::safe<uint64_t> &payload_length,
     const hilti::rt::Bool &from_client)
 {
 
@@ -372,7 +372,7 @@ hilti::rt::Bytes decrypt_crypto_payload(
     // Calculate the correct nonce for the decryption
     decryptInfo.nonce = calculate_nonce(iv, decryptInfo.packet_number);
 
-    std::vector<uint8_t> decrypted_data = decrypt(key, e_pkt, payload_offset, decryptInfo);
+    std::vector<uint8_t> decrypted_data = decrypt(key, e_pkt, payload_length, decryptInfo);
 
     // Return it as hilti Bytes again
     hilti::rt::Bytes decr(decrypted_data.begin(), decrypted_data.end());
