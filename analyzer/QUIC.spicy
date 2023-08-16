@@ -232,10 +232,10 @@ type CRYPTOPayload = unit(from_client: bool) {
 };
 
 type ACKPayload = unit {
-  latest_ack: uint8;
-  ack_delay: uint8;
-  ack_range_count: uint8;
-  first_ack_range: uint8;
+  latest_ack: VariableLengthInteger;
+  ack_delay: VariableLengthInteger;
+  ack_range_count: VariableLengthInteger;
+  first_ack_range: VariableLengthInteger;
 };
 
 
