@@ -48,6 +48,12 @@ type ConnectionIDInfo = unit {
   var client_initial_processed: bool;
   var server_initial_processed: bool;
 
+@if SPICY_VERSION >= 10800
+  var ssl_handle: optional<zeek::ProtocolHandle>;
+@else
+  var did_ssl_begin: bool;
+@endif
+
   on %init {
     self.client_cid_len = 0;
     self.server_cid_len = 0;
@@ -304,6 +310,21 @@ type Frame = unit(from_client: bool, context: ConnectionIDInfo&) {
   sink crypto_sink;
   var crypto_buffer: CryptoBuffer&;
 
+  # Attach an SSL analyzer to this connection once.
+  on %init {
+@if SPICY_VERSION >= 10800
+    if ( ! context.ssl_handle ) {
+      context.ssl_handle = zeek::protocol_handle_get_or_create("SSL");
+    }
+@else
+    if ( ! context.did_ssl_begin )
+      {
+      zeek::protocol_begin("SSL");
+      context.did_ssl_begin = True;
+      }
+@endif
+  }
+
   # Peek into the header to check if it's a SHORT or LONG header
   : InitialByte &try {
     self.hdr_form = $$.initialbyte.header_form;
@@ -387,14 +408,19 @@ type Frame = unit(from_client: bool, context: ConnectionIDInfo&) {
   # to the SSL analyzer as handshake data.
   on %done {
     if ( self.crypto_buffer != Null && |self.crypto_buffer.buffered| > 0 ) {
-      local ssl_handle = zeek::protocol_handle_get_or_create("SSL");
-
       local handshake_data = self.crypto_buffer.buffered;
 
       # The data is passed to the SSL analyzer as part of a HANDSHAKE (0x16) message with TLS1.3 (\x03\x03).
       # The 2 length bytes are also passed, followed by the actual CRYPTO blob which contains a CLIENT HELLO or SERVER HELLO
       local length_bytes = pack(cast<uint16>(|handshake_data|), spicy::ByteOrder::Big);
-      zeek::protocol_data_in(from_client, b"\x16\x03\x03" + length_bytes + handshake_data, ssl_handle);
+      zeek::protocol_data_in(
+        from_client
+        , b"\x16\x03\x03" + length_bytes + handshake_data
+# With Spicy 1.8.0, can use the SSL handle directly.
+@if SPICY_VERSION >= 10800
+        , context.ssl_handle
+@endif
+      );
 
       # Stop decryption attempts after processing the very first
       # INITIAL packet.
