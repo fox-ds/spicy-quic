@@ -157,6 +157,7 @@ DecryptionInformation remove_header_protection(std::vector<uint8_t> client_hp, u
                                     AEAD_SAMPLE_LENGTH);
     std::vector<uint8_t> mask(sample.size());
     EVP_CipherUpdate(ctx, mask.data(), &outlen, sample.data(), AEAD_SAMPLE_LENGTH);
+    EVP_CIPHER_CTX_free(ctx);
 
     // To determine the actual packet number length,
     // we have to remove the mask from the first byte
@@ -308,6 +309,7 @@ std::vector<uint8_t> decrypt(std::vector<uint8_t> client_key,
 
     // Validate whether the decryption was successful or not
     EVP_CipherFinal_ex(ctx, NULL, &out2);
+    EVP_CIPHER_CTX_free(ctx);
 
     // Copy the decrypted data from the decrypted buffer into a new vector and return this
     // Use the `out` variable to only include relevant bytes
