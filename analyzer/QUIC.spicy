@@ -18,16 +18,16 @@ function should_buffer(is_client: bool, info: ConnectionIDInfo): bool {
   return ! info.server_initial_processed;
 }
 
-type ConnectionIDInfo = unit {
-  var client_cid_len: uint8;
-  var server_cid_len: uint8;
+type ConnectionIDInfo = struct {
+  client_cid_len: uint8;
+  server_cid_len: uint8;
 
   # The DCID used by the client is employed by client and
   # server for packet protection. Packet re-ordering
   # will make life miserable.
   #
   # https://quicwg.org/base-drafts/rfc9001.html#appendix-A
-  var initial_destination_conn_id: bytes;
+  initial_destination_conn_id: bytes;
 
   # Currently, this analyzer assumes that ClientHello
   # and ServerHello fit into the first INITAL packet (and
@@ -45,21 +45,14 @@ type ConnectionIDInfo = unit {
   #
   # We also rely heavily on getting originator and responder right.
   #
-  var client_initial_processed: bool;
-  var server_initial_processed: bool;
+  client_initial_processed: bool;
+  server_initial_processed: bool;
 
 @if SPICY_VERSION >= 10800
-  var ssl_handle: optional<zeek::ProtocolHandle>;
+  ssl_handle: optional<zeek::ProtocolHandle>;
 @else
-  var did_ssl_begin: bool;
+  did_ssl_begin: bool;
 @endif
-
-  on %init {
-    self.client_cid_len = 0;
-    self.server_cid_len = 0;
-    self.client_initial_processed = False;
-    self.server_initial_processed = False;
-  }
 };
 
 ##############
