@@ -49,7 +49,7 @@ type ConnectionIDInfo = struct {
   server_initial_processed: bool;
 
 @if SPICY_VERSION >= 10800
-  ssl_handle: optional<zeek::ProtocolHandle>;
+  ssl_handle: zeek::ProtocolHandle &optional;
 @else
   did_ssl_begin: bool;
 @endif
@@ -162,7 +162,7 @@ type AllData = unit {
   }
 };
 
-public type LongHeader = unit {
+public type LongHeaderPacket = unit {
   var encrypted_offset: uint64;
   var payload_length: uint64;
   var client_conn_id_length: uint8;
@@ -182,7 +182,7 @@ public type LongHeader = unit {
   src_conn_id: bytes &size=self.client_conn_id_length;
 
   switch ( self.first_byte.packet_type ) {
-    LongPacketType::INITIAL -> initial_hdr : InitialLongPacket {
+    LongPacketType::INITIAL -> initial_hdr : InitialPacket(self) {
         self.encrypted_offset = self.offset() +
                                 self.initial_hdr.length.bytes_to_parse +
                                 self.initial_hdr.token_length.bytes_to_parse +
@@ -190,14 +190,14 @@ public type LongHeader = unit {
         self.payload_length   = self.initial_hdr.length.result;
     }
 
-    LongPacketType::ZERO_RTT -> zerortt_hdr : ZeroRTTLongPacketHeader(self.first_byte.type_specific_bits);
-    LongPacketType::HANDSHAKE -> handshake_hdr : HandshakeLongPacketHeader(self.first_byte.type_specific_bits);
-    LongPacketType::RETRY -> retry_hdr : RetryLongPacketHeader(self.first_byte.type_specific_bits);
+    LongPacketType::ZERO_RTT -> zerortt_hdr : ZeroRTTPacket(self);
+    LongPacketType::HANDSHAKE -> handshake_hdr : HandshakePacket(self);
+    LongPacketType::RETRY -> retry_hdr : RetryPacket(self);
   };
 };
 
-# Decrypted long packet payload that can actually be parsed
-public type DecryptedLongPacketPayload = unit(packet_type: LongPacketType, from_client: bool, crypto_sink: sink) {
+# A QUIC Frame.
+public type Frame = unit(packet_type: LongPacketType, from_client: bool, crypto_sink: sink) {
   frame_type : uint8 &convert=cast<FrameType>($$);
 
   # TODO: add other FrameTypes as well
@@ -216,12 +216,6 @@ public type DecryptedLongPacketPayload = unit(packet_type: LongPacketType, from_
 # TODO: investigate whether we can do something useful with this
 public type EncryptedLongPacketPayload = unit {
   payload: bytes &eod;
-};
-
-# Determines how to parse the long packet payload, depending on whether is was decrypted or not
-public type LongPacketPayload = unit(packet_type: LongPacketType, from_client: bool, crypto_sink: sink, encrypted: bool) {
-  : DecryptedLongPacketPayload(packet_type, from_client, crypto_sink) if (encrypted == False);
-  : EncryptedLongPacketPayload if (encrypted == True);
 };
 
 type CRYPTOPayload = unit(from_client: bool) {
@@ -244,7 +238,8 @@ type ACKPayload = unit {
 ##############
 
 # Remainder of an Initial packet
-type InitialLongPacket = unit() {
+type InitialPacket = unit(header: LongHeaderPacket) {
+  var header: LongHeaderPacket = header;
   token_length: VariableLengthInteger;
   token: bytes &size=self.token_length.result;
   length: VariableLengthInteger;
@@ -255,10 +250,33 @@ type InitialLongPacket = unit() {
   payload: bytes &size=self.length.result;
 };
 
-# TODO: implement
-type ZeroRTTLongPacketHeader = unit(type_specific_bits: uint8) {};
-type HandshakeLongPacketHeader = unit(type_specific_bits: uint8) {};
-type RetryLongPacketHeader = unit(type_specific_bits: uint8) {};
+type ZeroRTTPacket = unit(header: LongHeaderPacket) {
+  var header: LongHeaderPacket = header;
+  length: VariableLengthInteger;
+  payload: bytes &size=self.length.result;
+};
+
+type HandshakePacket = unit(header: LongHeaderPacket) {
+  var header: LongHeaderPacket = header;
+  length: VariableLengthInteger;
+  payload: bytes &size=self.length.result;
+};
+
+
+type RetryPacket = unit(header: LongHeaderPacket) {
+  var header: LongHeaderPacket = header;
+  var retry_token: bytes;
+  var integrity_tag: bytes;
+
+  # A retry packet ends with a 128bit / 16 byte integrity
+  # tag, but otherwise we do not know anything about the
+  # size of the retry_token. Slurp the whole datagram and
+  # post split it into the distinct parts.
+  data: bytes &eod {
+    self.retry_token = self.data.sub(0, |self.data| - 16);
+    self.integrity_tag = self.data.sub(|self.data| - 16, |self.data|);
+  }
+};
 
 ##############
 # Short packets
@@ -308,7 +326,7 @@ type Packet = unit(from_client: bool, context: ConnectionIDInfo&) {
   # Attach an SSL analyzer to this connection once.
   on %init {
 @if SPICY_VERSION >= 10800
-    if ( ! context.ssl_handle ) {
+    if ( ! context?.ssl_handle ) {
       context.ssl_handle = zeek::protocol_handle_get_or_create("SSL");
     }
 @else
@@ -328,14 +346,28 @@ type Packet = unit(from_client: bool, context: ConnectionIDInfo&) {
   # Capture all the packet bytes if we're still have a chance of decrypting the INITIAL PACKETS
   fpack: AllData &try if ( should_buffer(from_client, context) );
 
-  var is_encrypted: bool = True;
-
   # Depending on the header, parse it and update the src/dest ConnectionID's
   switch ( self.header_form ) {
     HeaderForm::SHORT -> short_header: ShortHeader(context.client_cid_len);
-    HeaderForm::LONG -> long_header: LongHeader {
+    HeaderForm::LONG -> long_header: LongHeaderPacket {
         # For now, only allow a change of src/dest ConnectionID's for INITIAL packets.
-        # TODO: allow this for Retry packets
+
+        # If we see a retry packet from the responder, reset the decryption
+        # context such that the next DCID from the client is used for decryption.
+        if ( self.long_header.first_byte.packet_type == LongPacketType::RETRY ) {
+          context.client_initial_processed = False;
+          context.server_initial_processed = False;
+          context.initial_destination_conn_id = b"";
+
+          # Allow re-opening the SSL analyzer the next time around.
+@if SPICY_VERSION >= 10800
+          zeek::protocol_handle_close(context.ssl_handle);
+          unset context.ssl_handle;
+@else
+          zeek::protocol_end();
+          context.did_ssl_begin = False;
+@endif
+        }
 
         if ( self.long_header.first_byte.packet_type == LongPacketType::INITIAL 
             && should_buffer(from_client, context) ) {
@@ -358,7 +390,6 @@ type Packet = unit(from_client: bool, context: ConnectionIDInfo&) {
                                    self.long_header.encrypted_offset,
                                    self.long_header.payload_length,
                                    from_client);
-            self.is_encrypted = False;
 
             # Set this to be the seed for the decryption
             if ( |context.initial_destination_conn_id| == 0 ) {
@@ -376,7 +407,6 @@ type Packet = unit(from_client: bool, context: ConnectionIDInfo&) {
                                    self.long_header.encrypted_offset,
                                    self.long_header.payload_length,
                                    from_client);
-            self.is_encrypted = False;
           }
         }
 
@@ -389,19 +419,20 @@ type Packet = unit(from_client: bool, context: ConnectionIDInfo&) {
     }
   };
 
-  # Depending on the type of header, we parse the remaining payload.
-  switch ( self.header_form ) {
-    HeaderForm::SHORT -> remaining_short_payload: ShortPacketPayload;
+  # Depending on the type of header and whether we were able to decrypt
+  # some of it, parse the remaining payload.
+  : ShortPacketPayload if (self.header_form == HeaderForm::SHORT);
+  : EncryptedLongPacketPayload if (self.header_form == HeaderForm::LONG && |self.decrypted_data| == 0);
 
-    # XXX: There's something wrong here, self.decrypted_data will be empty
-    #      if we didn't decrypt anything and so the is_encrypted flag seems
-    #      useless, actually.
-    HeaderForm::LONG -> remaining_long_payload : LongPacketPayload(self.long_header.first_byte.packet_type, from_client, self.crypto_sink, self.is_encrypted)[] &parse-from=self.decrypted_data;
-  };
+  # If this was packet with a long header and decrypted data exists, attempt
+  # to parse the plain QUIC frames from it.
+  frames: Frame(self.long_header.first_byte.packet_type, from_client, self.crypto_sink)[] &parse-from=self.decrypted_data if (self.header_form == HeaderForm::LONG && |self.decrypted_data| > 0);
 
   # Once the Packet is fully parsed, pass the accumulated CRYPTO frames
   # to the SSL analyzer as handshake data.
   on %done {
+    # print "packet done", zeek::is_orig(), self.header_form, |self.decrypted_data|;
+
     if ( self.crypto_buffer != Null && |self.crypto_buffer.buffered| > 0 ) {
       local handshake_data = self.crypto_buffer.buffered;
 

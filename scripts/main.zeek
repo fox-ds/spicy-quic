@@ -85,12 +85,23 @@ function set_conn(c: connection, is_orig: bool, version: count, dcid: string, sc
 		c$quic$server_scid = bytestring_to_hexstr(scid);
 	}
 
-event QUIC::long_header(c: connection, is_orig: bool, packet_type: QUIC::LongPacketType, version: count, dcid: string, scid: string)
+event QUIC::initial_packet(c: connection, is_orig: bool, version: count, dcid: string, scid: string)
 	{
-	if ( packet_type != LongPacketType_INITIAL )
+	set_conn(c, is_orig, version, dcid, scid);
+	}
+
+# Upon a retry_packet(), if any c$quic state is pending to be logged, do so
+# now and prepare for a new entry.
+event QUIC::retry_packet(c: connection, is_orig: bool, version: count, dcid: string, scid: string, retry_token: string, integrity_tag: string)
+	{
+	if ( ! c?$quic )
 		return;
 
-	set_conn(c, is_orig, version, dcid, scid);
+	# If this record hasn't been logged, do so now
+	if ( ! c$quic$logged )
+		Log::write(LOG, c$quic);
+
+	delete c$quic;
 	}
 
 event ssl_extension_server_name(c: connection, is_client: bool, names: string_vec) &priority=5

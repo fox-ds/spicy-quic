@@ -6,10 +6,13 @@ protocol analyzer QUIC over UDP:
 import QUIC;
 import Zeek_QUIC;
 
-# TODO: Add actual events, instead of this dummy event
-on QUIC::ResponseFrame -> event QUIC::example($conn);
-
 # Make the enum available.
 export QUIC::LongPacketType;
 
-on QUIC::LongHeader -> event QUIC::long_header($conn, $is_orig, self.first_byte.packet_type, self.version, self.dest_conn_id, self.src_conn_id);
+on QUIC::InitialPacket -> event QUIC::initial_packet($conn, $is_orig, self.header.version, self.header.dest_conn_id, self.header.src_conn_id);
+
+on QUIC::RetryPacket -> event QUIC::retry_packet($conn, $is_orig, self.header.version, self.header.dest_conn_id, self.header.src_conn_id, self.retry_token, self.integrity_tag);
+
+on QUIC::HandshakePacket -> event QUIC::handshake_packet($conn, $is_orig, self.header.version, self.header.dest_conn_id, self.header.src_conn_id);
+
+on QUIC::ZeroRTTPacket -> event QUIC::zero_rtt_packet($conn, $is_orig, self.header.version, self.header.dest_conn_id, self.header.src_conn_id);
