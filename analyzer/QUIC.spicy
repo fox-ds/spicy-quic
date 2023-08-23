@@ -114,7 +114,7 @@ public type InitialByte = unit {
   initialbyte: bitfield(8) {
     header_form: 7 &convert=cast<HeaderForm>(cast<uint8>($$));
   };
-  on %done{
+  on %done {
     self.backtrack();
   }
 };
@@ -293,10 +293,12 @@ type CryptoBuffer = unit() {
 };
 
 ##############
-# QUIC frame parsing
+# QUIC packet parsing
+#
+# A UDP datagram contains one or more QUIC packets.
 ##############
-type Frame = unit(from_client: bool, context: ConnectionIDInfo&) {
-  var hdr_form: HeaderForm;
+type Packet = unit(from_client: bool, context: ConnectionIDInfo&) {
+  var header_form: HeaderForm;
   var decrypted_data: bytes;
   var full_packet: bytes;
 
@@ -320,7 +322,7 @@ type Frame = unit(from_client: bool, context: ConnectionIDInfo&) {
 
   # Peek into the header to check if it's a SHORT or LONG header
   : InitialByte &try {
-    self.hdr_form = $$.initialbyte.header_form;
+    self.header_form = $$.initialbyte.header_form;
   }
 
   # Capture all the packet bytes if we're still have a chance of decrypting the INITIAL PACKETS
@@ -329,7 +331,7 @@ type Frame = unit(from_client: bool, context: ConnectionIDInfo&) {
   var is_encrypted: bool = True;
 
   # Depending on the header, parse it and update the src/dest ConnectionID's
-  switch ( self.hdr_form ) {
+  switch ( self.header_form ) {
     HeaderForm::SHORT -> short_header: ShortHeader(context.client_cid_len);
     HeaderForm::LONG -> long_header: LongHeader {
         # For now, only allow a change of src/dest ConnectionID's for INITIAL packets.
@@ -388,7 +390,7 @@ type Frame = unit(from_client: bool, context: ConnectionIDInfo&) {
   };
 
   # Depending on the type of header, we parse the remaining payload.
-  switch ( self.hdr_form ) {
+  switch ( self.header_form ) {
     HeaderForm::SHORT -> remaining_short_payload: ShortPacketPayload;
 
     # XXX: There's something wrong here, self.decrypted_data will be empty
@@ -430,10 +432,10 @@ type Frame = unit(from_client: bool, context: ConnectionIDInfo&) {
 ##############
 public type RequestFrame = unit {
   %context = ConnectionIDInfo;
-  : Frame(True, self.context());
+  : Packet(True, self.context());
 };
 
 public type ResponseFrame = unit {
   %context = ConnectionIDInfo;
-  : Frame(False, self.context());
+  : Packet(False, self.context());
 };
